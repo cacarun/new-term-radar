@@ -1085,3 +1085,49 @@ def test_tutorial_asks_only_for_leads_marked_one_click(cfg, monkeypatch):
     assert [x["term"] for x in out["leads"]] == ["opus blender game"] and out["cost_micros"] == 2000 + 1000
     text = "\n".join(report._tutorial_lines(out))
     assert "Too many manual steps (wants a tool, 1) → one click blender export" in text
+
+
+# --- ⑧ sellers: sites that just put up a payment link ---------------------------------------------
+
+from radar import sellers  # noqa: E402
+
+
+def _backlinks(rows):
+    def where(d):          # a forum thread is not the forum selling anything
+        return f"https://{d}/t/freelancer-invoice-inbox/185482" if d.startswith("community.") else f"https://{d}/pricing"
+    return {"b": {"tasks": [{"result": [{"items": [{"domain_from": d, "url_to": u, "url_from": where(d),
+                                                     "first_seen": "2026-10-14 03:00:00 +00:00", "domain_from_rank": 10}
+                                                    for d, u in rows]}]}]}}
+
+
+def test_sellers_keep_payment_links_and_leave_out_the_rest(cfg, tmp_path, monkeypatch):
+    cfg["sellers"]["platforms"] = ["stripe", "lemonsqueezy", "gumroad", "creem"]
+    answers = {
+        "buy.stripe.com": [("pestora.framer.website", "https://buy.stripe.com/aFa28rbpG9"), ("github.com", "https://buy.stripe.com/x")],
+        "lemonsqueezy.com": [("meetit.app", "https://merit.lemonsqueezy.com/checkout/buy/c0b375"), ("seo.shop", "https://lemonsqueezy.com/"),
+                             ("x.app", "https://www.lemonsqueezy.com/checkout")],
+        "gumroad.com": [("lydiadupree.com", "https://lydiadupree.gumroad.com/l/toxins-in-textiles"), ("spam.com", "https://tr88seocom.gumroad.com/"),
+                        ("community.n8n.io", "https://x.gumroad.com/l/invoice-flow")],
+        "creem.io": [("launchhome.app", "https://www.creem.io/payment/prod_59Tt3"), ("docs.example", "https://docs.creem.io/api-reference")],
+    }
+    monkeypatch.setattr(sellers.aisa, "call", lambda calls: (_backlinks(answers[calls[0]["arguments"]["body"][0]["target"]]), 27600))
+    monkeypatch.setattr(sellers, "page_words", lambda host: ("Pestora — pest control software", "Book and bill pest jobs") if host.startswith("pestora")
+                        else ("", ""))
+    first = sellers.sellers(cfg, tmp_path)
+    hosts = {s["host"]: s for s in first["sellers"]}
+    assert set(hosts) == {"pestora.framer.website", "meetit.app", "lydiadupree.com", "launchhome.app"}      # links that take money only
+    assert hosts["pestora.framer.website"]["term"] == "pestora" and hosts["lydiadupree.com"]["term"] == "lydiadupree"
+    assert first["first_run"] and first["cost_micros"] == 4 * 27600
+    lead = [x for x in first["terms"] if x["term"] == "pestora"][0]
+    assert lead["about"] == ("https://pestora.framer.website/", "Pestora — pest control software. Book and bill pest jobs")
+    text = "\n".join(report._seller_lines(first))
+    assert "| [meetit.app](https://meetit.app/) | Lemon Squeezy |" in text and "not that it sells well" in text
+    again = sellers.sellers(cfg, tmp_path)
+    assert again["sellers"] == [] and not again["first_run"]                                              # each site reported once
+
+
+def test_a_seller_link_sits_on_the_sites_own_page():
+    assert sellers.own_page("https://runvouch.com/") and sellers.own_page("https://writemage.com/pricing")
+    assert not sellers.own_page("https://community.n8n.io/t/freelancer-invoice/185482")
+    assert not sellers.own_page("https://www.framer.com/marketplace/templates/aurius/")
+    assert not sellers.own_page("https://flathub.org/apps/uk.co.weather")

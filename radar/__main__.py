@@ -11,6 +11,7 @@ Signals:
   ③ newsites  domains registered in the last 90 days that already rank (weekly; AIsa)
   ⑥ revenue   products people pay for, growing fastest or newly listed (weekly; TrustMRR key)
   ⑦ asks      what people ask for on Reddit ("is there an AI tool that…"), sized (weekly; AIsa)
+  ⑧ sellers   sites that just put up a payment link: Stripe, Polar, Lemon Squeezy, Gumroad, Creem (weekly; AIsa)
   ④ gsc       queries your own site got impressions for, for the first time (optional)
   ⑤ review    leads from 14 days ago checked in Google Trends; hit rate per signal (AIsa)
   usecases    the generic terms behind today's names, sized against a benchmark keyword (AIsa)
@@ -39,10 +40,10 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from . import asks, breakout, config, gsc, new_sites, notify, pains, report, review, revenue, sitemaps, sources, store, usecases
+from . import asks, breakout, config, gsc, new_sites, notify, pains, report, review, revenue, sellers, sitemaps, sources, store, usecases
 from .i18n import t
 
-SKIPPABLE = {"x", "hf", "breakout", "sitemaps", "newsites", "revenue", "asks", "gsc", "review", "judge", "usecases", "tutorials"}
+SKIPPABLE = {"x", "hf", "breakout", "sitemaps", "newsites", "revenue", "asks", "sellers", "gsc", "review", "judge", "usecases", "tutorials"}
 
 
 def run(fn, skip: bool = False) -> dict:
@@ -89,6 +90,8 @@ def cmd_daily(args, cfg: dict, state: Path) -> int:
             args.revenue or date.today().weekday() == cfg["revenue"]["weekday"])),
         "ask": run(lambda: asks.asks(cfg, state), "asks" in args.skip or not (
             args.asks or date.today().weekday() == cfg["asks"]["weekday"])),
+        "seller": run(lambda: sellers.sellers(cfg, state), "sellers" in args.skip or not (
+            args.sellers or date.today().weekday() == cfg["sellers"]["weekday"])),
     }
     found = run(lambda: gsc.gsc_new(cfg), "gsc" in args.skip)
     lead, judged = report.leads(cfg, blocks)
@@ -192,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--new-sites", action="store_true", help="run the weekly new-site signal today")
     p.add_argument("--revenue", action="store_true", help="run the weekly revenue signal today (needs TRUSTMRR_API_KEY)")
     p.add_argument("--asks", action="store_true", help="run the weekly Reddit asks signal today")
+    p.add_argument("--sellers", action="store_true", help="run the weekly new-sellers signal today")
     p.add_argument("--extension", action="append", default=[], metavar="ID", help="for `pains`: a Chrome extension to read the reviews of")
     p.add_argument("--mail", action="store_true", help="mail the report (see radar/notify.py)")
     args = p.parse_args(argv)

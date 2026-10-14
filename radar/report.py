@@ -167,13 +167,16 @@ def _seller_lines(sl: dict) -> list[str]:
     rows = sl.get("sellers") or []
     if not rows:
         return lines + [t("recent_none", why="; ".join(sl.get("errors") or []) or sl.get("error") or t("sellers_none"))]
-    lines += [t("sellers_intro", links=sl["links"], new=sl["new"]), "", t("sellers_cols"), "|---|---|---|---|---|"]
+    lines += [t("sellers_intro", links=sl["links"], new=sl["new"]), "", t("sellers_cols"), "|---|---|---|---|---|---|"]
     for s in rows:
         what = _cell((s["title"] + (" — " + s["description"] if s["description"] else ""))[:110]) or t("dash")
         seen = f"{s['visits']:,}" if s["visits"] else t("dash")
-        lines.append(f"| [{s['host']}](https://{s['host']}/) | {sellers.LABEL[s['platform']]} | {what} | {seen} | {s['first_seen']} |")
+        lines.append(f"| [{s['host']}](https://{s['host']}/) | {t('sk_' + s.get('kind', 'other'))} | {sellers.LABEL[s['platform']]} | {what} | "
+                     f"{seen} | {s['first_seen']} |")
     if sl.get("errors"):
         lines.append(t("sellers_err", why="; ".join(sl["errors"][:3])))
+    if sl.get("kind_error"):
+        lines.append(t("sellers_kind_err"))
     return lines + ["", t("sellers_note")]
 
 

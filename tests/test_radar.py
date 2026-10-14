@@ -1113,15 +1113,21 @@ def test_sellers_keep_payment_links_and_leave_out_the_rest(cfg, tmp_path, monkey
     monkeypatch.setattr(sellers.aisa, "call", lambda calls: (_backlinks(answers[calls[0]["arguments"]["body"][0]["target"]]), 27600))
     monkeypatch.setattr(sellers, "page_words", lambda host: ("Pestora — pest control software", "Book and bill pest jobs") if host.startswith("pestora")
                         else ("", ""))
+    kinds = {"pestora.framer.website": "ai", "meetit.app": "ai", "lydiadupree.com": "content", "launchhome.app": "ai"}
+
+    def chat(model, system, user, max_tokens=1500):
+        return json.dumps([{"i": x["i"], "kind": kinds[x["domain"]]} for x in json.loads(user)])
+    monkeypatch.setattr(sellers.aisa, "chat", chat)
     first = sellers.sellers(cfg, tmp_path)
     hosts = {s["host"]: s for s in first["sellers"]}
+    assert [s["kind"] for s in first["sellers"]] == ["ai", "ai", "ai", "content"]                       # AI and software first
     assert set(hosts) == {"pestora.framer.website", "meetit.app", "lydiadupree.com", "launchhome.app"}      # links that take money only
     assert hosts["pestora.framer.website"]["term"] == "pestora" and hosts["lydiadupree.com"]["term"] == "lydiadupree"
     assert first["first_run"] and first["cost_micros"] == 4 * 27600
     lead = [x for x in first["terms"] if x["term"] == "pestora"][0]
     assert lead["about"] == ("https://pestora.framer.website/", "Pestora — pest control software. Book and bill pest jobs")
     text = "\n".join(report._seller_lines(first))
-    assert "| [meetit.app](https://meetit.app/) | Lemon Squeezy |" in text and "not that it sells well" in text
+    assert "| [meetit.app](https://meetit.app/) | AI / software | Lemon Squeezy |" in text and "not that it sells well" in text
     again = sellers.sellers(cfg, tmp_path)
     assert again["sellers"] == [] and not again["first_run"]                                              # each site reported once
 
@@ -1131,3 +1137,11 @@ def test_a_seller_link_sits_on_the_sites_own_page():
     assert not sellers.own_page("https://community.n8n.io/t/freelancer-invoice/185482")
     assert not sellers.own_page("https://www.framer.com/marketplace/templates/aurius/")
     assert not sellers.own_page("https://flathub.org/apps/uk.co.weather")
+
+
+def test_seller_kinds_fall_back_to_keyword_rules():
+    rows = [{"host": "notchlive.app", "title": "NotchLive — Live Captions for Mac", "description": ""},
+            {"host": "lexingtonthemes.com", "title": "Astro Themes & Tailwind CSS Templates", "description": ""},
+            {"host": "murciatoday.com", "title": "Murcia Today News", "description": ""}]
+    got, error = sellers.kinds("gpt-4.1-mini", rows)          # the call is blocked in tests: rules take over
+    assert got == {"notchlive.app": "ai", "lexingtonthemes.com": "template", "murciatoday.com": "donation"} and error

@@ -17,7 +17,9 @@ pricing or product page; the first real run showed what else carries payment lin
 big platforms (framer.com templates, pub.dev packages, Flathub apps, forum threads, newsletters,
 news articles). So the linking page must be a short, non-content path, the site must rank
 `rank_max` or lower (DataForSEO's 0 to 1000 scale), and above `max_visits` a month it is a
-platform, not a new seller. Each seller's home-page title and
+platform, not a new seller. The home pages of the newest `pool` candidates are read, a small model
+sorts them by kind (keyword rules when it cannot), and AI and software come first, then templates,
+courses and the rest; within a kind, the busiest first. Each seller's home-page title and
 description (read free) go to the keyword table as evidence, as for ⑥: the table reads the job
 people pay for.
 
@@ -27,6 +29,7 @@ volume), and revenue. A link means the site sells, not that it sells well.
 from __future__ import annotations
 
 import html
+import json
 import re
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -52,6 +55,24 @@ SHARED = {"github.com", "reddit.com", "x.com", "twitter.com", "youtube.com", "me
           "producthunt.com", "indiehackers.com", "facebook.com", "instagram.com", "tiktok.com", "discord.com", "google.com",
           "linkedin.com", "pinterest.com", "quora.com", "bit.ly", "beacons.ai", "bento.me", "t.me", "telegram.me"}
 PAGE_BYTES, WORKERS = 300_000, 4
+KINDS = ["ai", "template", "course", "content", "physical", "other", "donation"]      # the order sellers are listed in
+KIND_RULES = [
+    ("ai", r"\b(ai|gpt|llm|agents?|automat\w*|saas|apps?|software|api|bots?|tools?|generator|assistant|extension|plugin|mcp|"
+           r"workflow|boilerplate|builder|analytics|mac|ios|android|cli|sdk|transcri\w+)\b"),
+    ("template", r"\b(templates?|themes?|ui kit|framer|figma|notion|webflow|icons?|fonts?|mockups?|design system|components?|"
+                 r"presets?|luts?|add-?ons?|3d|assets?)\b"),
+    ("course", r"\b(courses?|training|academy|certification|coach\w*|workshops?|masterclass|mentor\w*|consult\w*|lessons?|class|exam)\b"),
+    ("content", r"\b(e-?books?|guides?|recipes?|books?|newsletters?|community|membership|podcasts?|blog|magazine)\b"),
+    ("physical", r"\b(shop|store|merch|plush\w*|apparel|prints?|jewel\w*|candles?|coffee|bikes?|shoes?|clothing|toys?|swag)\b"),
+    ("donation", r"\b(donat\w*|news|church|charity|foundation|non-?profit|ministry|journal|association)\b"),
+]
+KIND_SYSTEM = (
+    "You sort websites that just put up a payment link. From each one's domain, title and description choose its kind: "
+    "'ai' (an AI product or any software: app, SaaS, browser extension, API, developer tool, agent), 'template' (templates, "
+    "themes, UI kits, icons, fonts, 3D models, design assets), 'course' (courses, training, coaching, consulting), 'content' "
+    "(ebooks, guides, newsletters, communities, memberships), 'physical' (physical goods), 'donation' (donations, news sites, "
+    "churches, charities, nonprofits) or 'other'.\nAnswer with JSON only, one object per site, in order: [{\"i\": 0, \"kind\": \"ai\"}, ...]"
+)
 CONTENT = re.compile(r"/(t|p|posts?|story\w*|listings?\w*|profiles?|threads?|forum\w*|packages?|apps|themes|marketplace|questions|"
                      r"news|blog|articles?|wiki|view-image|galler\w*|events?|calendar|members?|users?|u|r|discussions?)(/|$)|"
                      r"\.(php|jsp|page)\b|\d{4,}", re.I)
@@ -116,6 +137,29 @@ def term_of(host: str, title: str) -> str:
             else label[-2] if len(label) >= 2 else host).lower()
 
 
+def kind_by_rules(r: dict) -> str:
+    text = f"{r.get('title', '')} {r.get('description', '')} {r['host']}".lower()
+    return next((k for k, rx in KIND_RULES if re.search(rx, text)), "other")
+
+
+def kinds(model: str, rows: list[dict]) -> tuple[dict[str, str], str]:
+    """{host: kind} from one model call; keyword rules for whatever it leaves out, and all of it when it fails."""
+    out, error = {}, ""
+    if rows and model:
+        user = json.dumps([{"i": i, "domain": r["host"], "title": r.get("title", ""), "description": r.get("description", "")[:160]}
+                           for i, r in enumerate(rows)], ensure_ascii=False)
+        try:
+            answer = aisa.chat(model, KIND_SYSTEM, user)
+            m = re.search(r"\[.*\]", answer, re.S)
+            for it in json.loads(m.group(0)) if m else []:
+                i = it.get("i") if isinstance(it, dict) else None
+                if isinstance(i, int) and 0 <= i < len(rows) and it.get("kind") in KINDS:
+                    out[rows[i]["host"]] = it["kind"]
+        except (aisa.AisaError, ValueError) as exc:
+            error = f"kinds: {str(exc)[:120]}"
+    return {r["host"]: out.get(r["host"]) or kind_by_rules(r) for r in rows}, error
+
+
 def visits(hosts: list[str]) -> tuple[dict[str, int], int]:
     if not goanyapi.key():
         return {}, 0
@@ -154,23 +198,29 @@ def sellers(cfg: dict, state: Path, today: date | None = None) -> dict:
         for r in rows:
             if r["host"] not in seen:
                 found.setdefault(r["host"], r)
-    new = sorted(found.values(), key=lambda r: (r["first_seen"], r["rank"]), reverse=True)[:c["max_leads"] * 2]
+    pool = sorted(found.values(), key=lambda r: (r["first_seen"], r["rank"]), reverse=True)[:c["pool"]]
+    with ThreadPoolExecutor(WORKERS) as workers:
+        words = dict(zip([r["host"] for r in pool], workers.map(page_words, [r["host"] for r in pool])))
+    for r in pool:
+        r["title"], r["description"] = words.get(r["host"], ("", ""))
+        r["term"] = term_of(r["host"], r["title"])
+    sorted_kinds, kind_error = kinds(c["model"], pool)
+    for r in pool:
+        r["kind"] = sorted_kinds[r["host"]]
+    order = lambda r: (KINDS.index(r["kind"]), -r["rank"])  # noqa: E731
+    new = sorted(pool, key=order)[:c["max_leads"] * 2]
     sizes, spent = visits([r["host"] for r in new]) if c.get("visits", True) else ({}, 0)
     cost += spent
     for r in new:
         r["visits"] = sizes.get(r["host"])
     new = [r for r in new if (r["visits"] or 0) <= c["max_visits"]]
-    new = sorted(new, key=lambda r: (r["visits"] or 0, r["rank"]), reverse=True)[:c["max_leads"]]
-    with ThreadPoolExecutor(WORKERS) as pool:
-        words = dict(zip([r["host"] for r in new], pool.map(page_words, [r["host"] for r in new])))
-    for r in new:
-        r["title"], r["description"] = words.get(r["host"], ("", ""))
-        r["term"] = term_of(r["host"], r["title"])
+    new = sorted(new, key=lambda r: (KINDS.index(r["kind"]), -(r["visits"] or 0), -r["rank"]))[:c["max_leads"]]
     for host in found:
         seen.setdefault(host, today.isoformat())
     if found:
         snap.save(path, seen)
     terms = [{"term": r["term"], "recent": 1, "about": (f"https://{r['host']}/", f"{r['title']}. {r['description']}".strip(". ")),
               "examples": [f"{r['host']} · {LABEL[r['platform']]}" + (f" · {r['visits']:,} visits/month" if r["visits"] else "")],
-              "note": t("note_seller", via=LABEL[r["platform"]], day=r["first_seen"])} for r in new]
-    return {"links": read, "new": len(found), "first_run": first, "sellers": new, "terms": terms, "errors": errors, "cost_micros": cost}
+              "note": t("note_seller", via=LABEL[r["platform"]], day=r["first_seen"], kind=t("sk_" + r["kind"]))} for r in new]
+    return {"links": read, "new": len(found), "first_run": first, "sellers": new, "terms": terms, "errors": errors,
+            "kind_error": kind_error, "cost_micros": cost}
